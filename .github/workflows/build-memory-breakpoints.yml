@@ -52,6 +52,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
+          $pngPrebuilt = (
+            Resolve-Path '.\3rdparty\libpng\libpng\scripts\pnglibconf.h.prebuilt'
+          ).Path.Replace('\', '/')
+
+          if (-not (Test-Path $pngPrebuilt)) {
+            throw "Prebuilt libpng configuration header was not found."
+          }
+
           cmake --preset msvc `
             -DHAS_MEMORY_BREAKPOINTS=ON `
             -DWITH_LLVM=OFF `
@@ -63,6 +71,7 @@ jobs:
             -DUSE_SYSTEM_ZLIB=OFF `
             -DUSE_SYSTEM_LIBPNG=OFF `
             -DALSOFT_ENABLE_MODULES=OFF `
+            "-DPNG_LIBCONF_HEADER=$pngPrebuilt" `
             "-DQt6_ROOT=$env:Qt6_ROOT"
 
           if ($LASTEXITCODE -ne 0) {
@@ -83,14 +92,20 @@ jobs:
             }
           }
 
+          $pngSetting = Select-String `
+            -Path $cachePath `
+            -Pattern '^PNG_LIBCONF_HEADER:FILEPATH=.+pnglibconf\.h\.prebuilt$'
+
+          if (-not $pngSetting) {
+            throw "PNG_LIBCONF_HEADER was not applied."
+          }
+
       - name: Build only the RPCS3 target
         shell: pwsh
         working-directory: rpcs3
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Do not build ALL_BUILD. Building only rpcs3 avoids unrelated
-          # auxiliary third-party targets. Serial build is slower but safer.
           cmake --build --preset msvc-release `
             --target rpcs3 `
             --parallel 1
@@ -122,6 +137,7 @@ jobs:
           WITH_LLVM=OFF
           USE_SYSTEM_SDL=OFF
           ALSOFT_ENABLE_MODULES=OFF
+          PNG_LIBCONF_HEADER=prebuilt
           Built target: rpcs3 only
           Purpose: Trusty Bell enemy-size investigation
           '@ | Set-Content `

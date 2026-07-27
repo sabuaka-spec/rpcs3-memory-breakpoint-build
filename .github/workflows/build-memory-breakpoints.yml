@@ -42,7 +42,7 @@ jobs:
         shell: bash
         working-directory: rpcs3
         run: |
-          # LLVM is unnecessary for the interpreter-only investigation build.
+          # LLVM is unnecessary for this interpreter-only investigation build.
           sed -i '/LLVMLIBS_URL/d' .ci/setup-windows.sh
           .ci/setup-windows.sh
 
@@ -59,6 +59,7 @@ jobs:
             -DSTATIC_LINK_LLVM=OFF `
             -DUSE_NATIVE_INSTRUCTIONS=OFF `
             -DUSE_LTO=OFF `
+            -DUSE_SYSTEM_SDL=OFF `
             "-DQt6_ROOT=$env:Qt6_ROOT"
 
           if ($LASTEXITCODE -ne 0) {
@@ -106,6 +107,7 @@ jobs:
           RPCS3 commit: 79822e1ac5ece67ffc6b68ea8aa3f4ae6ad2d948
           HAS_MEMORY_BREAKPOINTS=ON
           WITH_LLVM=OFF
+          USE_SYSTEM_SDL=OFF
           Purpose: Trusty Bell enemy-size investigation
           '@ | Set-Content `
             -Path (Join-Path $exe.Directory.FullName 'MEMORY_BREAKPOINT_BUILD.txt') `

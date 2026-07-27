@@ -60,30 +60,43 @@ jobs:
             -DUSE_NATIVE_INSTRUCTIONS=OFF `
             -DUSE_LTO=OFF `
             -DUSE_SYSTEM_SDL=OFF `
+            -DUSE_SYSTEM_ZLIB=OFF `
+            -DUSE_SYSTEM_LIBPNG=OFF `
+            -DALSOFT_ENABLE_MODULES=OFF `
             "-DQt6_ROOT=$env:Qt6_ROOT"
 
           if ($LASTEXITCODE -ne 0) {
             throw "CMake configuration failed."
           }
 
-          $enabled = Select-String `
-            -Path '.\build-msvc\CMakeCache.txt' `
-            -Pattern '^HAS_MEMORY_BREAKPOINTS:BOOL=ON$'
+          $cachePath = '.\build-msvc\CMakeCache.txt'
 
-          if (-not $enabled) {
-            throw "HAS_MEMORY_BREAKPOINTS was not enabled."
+          foreach ($required in @(
+            '^HAS_MEMORY_BREAKPOINTS:BOOL=ON$',
+            '^USE_SYSTEM_SDL:BOOL=OFF$',
+            '^USE_SYSTEM_ZLIB:BOOL=OFF$',
+            '^USE_SYSTEM_LIBPNG:BOOL=OFF$',
+            '^ALSOFT_ENABLE_MODULES:BOOL=OFF$'
+          )) {
+            if (-not (Select-String -Path $cachePath -Pattern $required)) {
+              throw "Required CMake setting was not applied: $required"
+            }
           }
 
-      - name: Build RPCS3
+      - name: Build only the RPCS3 target
         shell: pwsh
         working-directory: rpcs3
         run: |
           $ErrorActionPreference = 'Stop'
 
-          cmake --build --preset msvc-release --parallel 4
+          # Do not build ALL_BUILD. Building only rpcs3 avoids unrelated
+          # auxiliary third-party targets. Serial build is slower but safer.
+          cmake --build --preset msvc-release `
+            --target rpcs3 `
+            --parallel 1
 
           if ($LASTEXITCODE -ne 0) {
-            throw "RPCS3 build failed."
+            throw "RPCS3 target build failed."
           }
 
       - name: Verify and mark the finished build
@@ -108,6 +121,8 @@ jobs:
           HAS_MEMORY_BREAKPOINTS=ON
           WITH_LLVM=OFF
           USE_SYSTEM_SDL=OFF
+          ALSOFT_ENABLE_MODULES=OFF
+          Built target: rpcs3 only
           Purpose: Trusty Bell enemy-size investigation
           '@ | Set-Content `
             -Path (Join-Path $exe.Directory.FullName 'MEMORY_BREAKPOINT_BUILD.txt') `

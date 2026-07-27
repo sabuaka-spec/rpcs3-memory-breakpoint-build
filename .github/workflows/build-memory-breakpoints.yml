@@ -1,4 +1,4 @@
-name: Build RPCS3 Memory Breakpoints
+name: Build RPCS3 Memory Breakpoints MSBuild
 
 on:
   workflow_dispatch:
@@ -6,28 +6,34 @@ on:
 permissions:
   contents: read
 
+env:
+  BUILD_REPOSITORY_NAME: RPCS3/rpcs3
+  BUILD_SOURCEBRANCHNAME: memory-breakpoints
+  BUILD_PR_NUMBER: ''
+  BUILD_SOURCEVERSION: 79822e1ac5ece67ffc6b68ea8aa3f4ae6ad2d948
+  BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ github.workspace }}/artifacts/
+  COMPILER: msvc
+  QT_VER_MAIN: '6'
+  QT_VER: '6.11.1'
+  QT_VER_MSVC: 'msvc2022'
+  QT_DATE: '202605090529'
+  LLVM_VER: '19.1.7'
+  VULKAN_VER: '1.4.341.1'
+  VULKAN_SDK_SHA: 'bcf2d75aa9556889ab974858666e20b3655b6055a0db704ccb47279ff33b5bfe'
+  CCACHE_SHA: '859141059ac950e1e8cd042c66f842f26b9e3a62a1669a69fe6ba180cb58bbdf'
+  CCACHE_BIN_DIR: 'C:\ccache_bin'
+  CCACHE_DIR: 'C:\ccache'
+  CCACHE_INODECACHE: 'true'
+  CCACHE_SLOPPINESS: 'time_macros'
+  DEPS_CACHE_DIR: './dependency_cache'
+  QTDIR: 'C:\Qt\6.11.1\msvc2022_64'
+  VULKAN_SDK: 'C:\VulkanSDK\1.4.341.1'
+
 jobs:
   build:
-    name: RPCS3 79822e1a Memory Breakpoints
+    name: RPCS3 79822e1a Memory Breakpoints MSBuild
     runs-on: windows-2022
     timeout-minutes: 360
-
-    env:
-      QT_VER_MAIN: '6'
-      QT_VER: '6.11.1'
-      QT_VER_MSVC: 'msvc2022'
-      QT_DATE: '202605090529'
-      VULKAN_VER: '1.4.341.1'
-      VULKAN_SDK_SHA: 'bcf2d75aa9556889ab974858666e20b3655b6055a0db704ccb47279ff33b5bfe'
-      CCACHE_SHA: '859141059ac950e1e8cd042c66f842f26b9e3a62a1669a69fe6ba180cb58bbdf'
-      CCACHE_BIN_DIR: 'C:\ccache_bin'
-      CCACHE_DIR: 'C:\ccache'
-      CCACHE_INODECACHE: 'true'
-      CCACHE_SLOPPINESS: 'time_macros'
-      DEPS_CACHE_DIR: './dependency_cache'
-      QTDIR: 'C:\Qt\6.11.1\msvc2022_64'
-      Qt6_ROOT: 'C:\Qt\6.11.1\msvc2022_64'
-      VULKAN_SDK: 'C:\VulkanSDK\1.4.341.1'
 
     steps:
       - name: Checkout RPCS3 79822e1a
@@ -35,147 +41,120 @@ jobs:
         with:
           repository: RPCS3/rpcs3
           ref: 79822e1ac5ece67ffc6b68ea8aa3f4ae6ad2d948
-          path: rpcs3
           fetch-depth: 1
 
-      - name: Download and install RPCS3 dependencies
-        shell: bash
-        working-directory: rpcs3
-        run: |
-          # LLVM is unnecessary for this interpreter-only investigation build.
-          sed -i '/LLVMLIBS_URL/d' .ci/setup-windows.sh
-          .ci/setup-windows.sh
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v2
 
-      - name: Patch libpng to use the in-tree zlib target
+      - name: Restore NuGet packages
         shell: pwsh
-        working-directory: rpcs3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          nuget restore rpcs3.sln
+          if ($LASTEXITCODE -ne 0) {
+            throw "NuGet restore failed."
+          }
+
+      - name: Download official RPCS3 Windows dependencies
+        shell: bash
+        run: |
+          .ci/setup-windows.sh
+          .ci/setup-windows-ci-vars.sh win64 msvc
+
+      - name: Export official RPCS3 CI variables
+        shell: bash
+        run: |
+          while IFS='=' read -r key val; do
+            [ -z "$key" ] && continue
+            case "$key" in \#*) continue ;; esac
+            echo "$key=$val" >> "$GITHUB_ENV"
+          done < .ci/ci-vars.env
+
+      - name: Enable memory breakpoints in the MSBuild projects
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $file = '.\3rdparty\libpng\libpng\CMakeLists.txt'
+          $file = '.\buildfiles\msvc\common_default.props'
           $text = Get-Content -Path $file -Raw
 
-          $pattern = 'find_package\(ZLIB REQUIRED\)\r?\nset\(PNG_LINK_LIBRARIES ZLIB::ZLIB\)'
-          $replacement = "if(TARGET zlibstatic)`n  set(PNG_LINK_LIBRARIES zlibstatic)`nelse()`n  find_package(ZLIB REQUIRED)`n  set(PNG_LINK_LIBRARIES ZLIB::ZLIB)`nendif()"
+          $needle = '_HAS_EXCEPTIONS=0;%(PreprocessorDefinitions)'
+          $replacement = '_HAS_EXCEPTIONS=0;RPCS3_HAS_MEMORY_BREAKPOINTS;%(PreprocessorDefinitions)'
 
-          $updated = [regex]::Replace($text, $pattern, $replacement, 1)
-
-          if ($updated -eq $text) {
-            throw "The libpng zlib-link patch was not applied."
+          if (-not $text.Contains($needle)) {
+            throw "Could not find the common MSBuild preprocessor-definition line."
           }
 
+          $updated = $text.Replace($needle, $replacement)
           Set-Content -Path $file -Value $updated -NoNewline -Encoding utf8
 
-          if (-not (Select-String -Path $file -Pattern '^if\(TARGET zlibstatic\)$')) {
-            throw "The patched libpng zlib target was not found."
+          $found = Select-String `
+            -Path $file `
+            -Pattern 'RPCS3_HAS_MEMORY_BREAKPOINTS'
+
+          if (-not $found) {
+            throw "RPCS3_HAS_MEMORY_BREAKPOINTS was not inserted."
           }
 
-      - name: Configure RPCS3 with memory breakpoints
+          Write-Host "Memory-breakpoint macro inserted into:"
+          Write-Host $file
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Compile RPCS3 using the official Windows build route
         shell: pwsh
-        working-directory: rpcs3
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $pngPrebuilt = (
-            Resolve-Path '.\3rdparty\libpng\libpng\scripts\pnglibconf.h.prebuilt'
-          ).Path.Replace('\', '/')
-
-          if (-not (Test-Path $pngPrebuilt)) {
-            throw "Prebuilt libpng configuration header was not found."
-          }
-
-          cmake --preset msvc `
-            -DHAS_MEMORY_BREAKPOINTS=ON `
-            -DWITH_LLVM=OFF `
-            -DBUILD_LLVM=OFF `
-            -DSTATIC_LINK_LLVM=OFF `
-            -DUSE_NATIVE_INSTRUCTIONS=OFF `
-            -DUSE_LTO=OFF `
-            -DUSE_SYSTEM_SDL=OFF `
-            -DUSE_SYSTEM_ZLIB=OFF `
-            -DUSE_SYSTEM_LIBPNG=OFF `
-            -DALSOFT_ENABLE_MODULES=OFF `
-            "-DPNG_LIBCONF_HEADER=$pngPrebuilt" `
-            "-DQt6_ROOT=$env:Qt6_ROOT"
+          msbuild rpcs3.sln `
+            /m:2 `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:PreferredToolArchitecture=x64 `
+            /p:CLToolPath="$env:CCACHE_BIN_DIR" `
+            /p:UseMultiToolTask=true `
+            /p:CustomAfterMicrosoftCommonTargets="$env:GITHUB_WORKSPACE\buildfiles\msvc\ci_only.targets" `
+            /v:minimal
 
           if ($LASTEXITCODE -ne 0) {
-            throw "CMake configuration failed."
+            throw "Official RPCS3 MSBuild compilation failed."
           }
 
-          $cachePath = '.\build-msvc\CMakeCache.txt'
-
-          foreach ($required in @(
-            '^HAS_MEMORY_BREAKPOINTS:BOOL=ON$',
-            '^USE_SYSTEM_SDL:BOOL=OFF$',
-            '^USE_SYSTEM_ZLIB:BOOL=OFF$',
-            '^USE_SYSTEM_LIBPNG:BOOL=OFF$',
-            '^ALSOFT_ENABLE_MODULES:BOOL=OFF$'
-          )) {
-            if (-not (Select-String -Path $cachePath -Pattern $required)) {
-              throw "Required CMake setting was not applied: $required"
-            }
-          }
-
-          $pngSetting = Select-String `
-            -Path $cachePath `
-            -Pattern '^PNG_LIBCONF_HEADER:FILEPATH=.+pnglibconf\.h\.prebuilt$'
-
-          if (-not $pngSetting) {
-            throw "PNG_LIBCONF_HEADER was not applied."
-          }
-
-      - name: Build only the RPCS3 target
+      - name: Verify the finished build
         shell: pwsh
-        working-directory: rpcs3
         run: |
           $ErrorActionPreference = 'Stop'
 
-          cmake --build --preset msvc-release `
-            --target rpcs3 `
-            --parallel 1
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "RPCS3 target build failed."
-          }
-
-      - name: Verify and mark the finished build
-        shell: pwsh
-        working-directory: rpcs3
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $exe = Get-ChildItem `
-            -Path '.\build-msvc\bin' `
-            -Filter 'rpcs3.exe' `
-            -File `
-            -Recurse |
-            Select-Object -First 1
-
-          if (-not $exe) {
-            throw "rpcs3.exe was not found in build-msvc/bin."
+          if (-not (Test-Path '.\bin\rpcs3.exe')) {
+            throw "bin\rpcs3.exe was not created."
           }
 
           @'
           RPCS3 commit: 79822e1ac5ece67ffc6b68ea8aa3f4ae6ad2d948
-          HAS_MEMORY_BREAKPOINTS=ON
-          WITH_LLVM=OFF
-          USE_SYSTEM_SDL=OFF
-          ALSOFT_ENABLE_MODULES=OFF
-          PNG_LIBCONF_HEADER=prebuilt
-          libpng zlib target=zlibstatic
-          Built target: rpcs3 only
+          Windows build route: official rpcs3.sln + MSBuild
+          RPCS3_HAS_MEMORY_BREAKPOINTS=enabled globally
           Purpose: Trusty Bell enemy-size investigation
           '@ | Set-Content `
-            -Path (Join-Path $exe.Directory.FullName 'MEMORY_BREAKPOINT_BUILD.txt') `
+            -Path '.\bin\MEMORY_BREAKPOINT_BUILD.txt' `
             -Encoding UTF8
 
-          Write-Host "Finished executable:"
-          Write-Host $exe.FullName
+          Get-Item '.\bin\rpcs3.exe'
+          Get-Item '.\bin\MEMORY_BREAKPOINT_BUILD.txt'
+
+      - name: Package the finished RPCS3 build
+        shell: bash
+        run: |
+          mkdir -p "$BUILD_ARTIFACTSTAGINGDIRECTORY"
+          .ci/deploy-windows.sh
 
       - name: Upload finished RPCS3
         uses: actions/upload-artifact@v4
         with:
-          name: RPCS3-MemoryBreakpoints-79822e1a
-          path: rpcs3/build-msvc/bin/**
+          name: RPCS3-MemoryBreakpoints-79822e1a-MSBuild
+          path: artifacts/**
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0

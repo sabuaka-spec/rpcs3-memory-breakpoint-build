@@ -1,0 +1,123 @@
+name: Build RPCS3 Memory Breakpoints
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: RPCS3 79822e1a Memory Breakpoints
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    env:
+      QT_VER_MAIN: '6'
+      QT_VER: '6.11.1'
+      QT_VER_MSVC: 'msvc2022'
+      QT_DATE: '202605090529'
+      VULKAN_VER: '1.4.341.1'
+      VULKAN_SDK_SHA: 'bcf2d75aa9556889ab974858666e20b3655b6055a0db704ccb47279ff33b5bfe'
+      CCACHE_SHA: '859141059ac950e1e8cd042c66f842f26b9e3a62a1669a69fe6ba180cb58bbdf'
+      CCACHE_BIN_DIR: 'C:\ccache_bin'
+      CCACHE_DIR: 'C:\ccache'
+      CCACHE_INODECACHE: 'true'
+      CCACHE_SLOPPINESS: 'time_macros'
+      DEPS_CACHE_DIR: './dependency_cache'
+      QTDIR: 'C:\Qt\6.11.1\msvc2022_64'
+      Qt6_ROOT: 'C:\Qt\6.11.1\msvc2022_64'
+      VULKAN_SDK: 'C:\VulkanSDK\1.4.341.1'
+
+    steps:
+      - name: Checkout RPCS3 79822e1a
+        uses: actions/checkout@v4
+        with:
+          repository: RPCS3/rpcs3
+          ref: 79822e1ac5ece67ffc6b68ea8aa3f4ae6ad2d948
+          path: rpcs3
+          fetch-depth: 1
+
+      - name: Download and install RPCS3 dependencies
+        shell: bash
+        working-directory: rpcs3
+        run: |
+          # LLVM is unnecessary for the interpreter-only investigation build.
+          sed -i '/LLVMLIBS_URL/d' .ci/setup-windows.sh
+          .ci/setup-windows.sh
+
+      - name: Configure RPCS3 with memory breakpoints
+        shell: pwsh
+        working-directory: rpcs3
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          cmake --preset msvc `
+            -DHAS_MEMORY_BREAKPOINTS=ON `
+            -DWITH_LLVM=OFF `
+            -DBUILD_LLVM=OFF `
+            -DSTATIC_LINK_LLVM=OFF `
+            -DUSE_NATIVE_INSTRUCTIONS=OFF `
+            -DUSE_LTO=OFF `
+            "-DQt6_ROOT=$env:Qt6_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "CMake configuration failed."
+          }
+
+          $enabled = Select-String `
+            -Path '.\build-msvc\CMakeCache.txt' `
+            -Pattern '^HAS_MEMORY_BREAKPOINTS:BOOL=ON$'
+
+          if (-not $enabled) {
+            throw "HAS_MEMORY_BREAKPOINTS was not enabled."
+          }
+
+      - name: Build RPCS3
+        shell: pwsh
+        working-directory: rpcs3
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          cmake --build --preset msvc-release --parallel 4
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "RPCS3 build failed."
+          }
+
+      - name: Verify and mark the finished build
+        shell: pwsh
+        working-directory: rpcs3
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $exe = Get-ChildItem `
+            -Path '.\build-msvc\bin' `
+            -Filter 'rpcs3.exe' `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "rpcs3.exe was not found in build-msvc/bin."
+          }
+
+          @'
+          RPCS3 commit: 79822e1ac5ece67ffc6b68ea8aa3f4ae6ad2d948
+          HAS_MEMORY_BREAKPOINTS=ON
+          WITH_LLVM=OFF
+          Purpose: Trusty Bell enemy-size investigation
+          '@ | Set-Content `
+            -Path (Join-Path $exe.Directory.FullName 'MEMORY_BREAKPOINT_BUILD.txt') `
+            -Encoding UTF8
+
+          Write-Host "Finished executable:"
+          Write-Host $exe.FullName
+
+      - name: Upload finished RPCS3
+        uses: actions/upload-artifact@v4
+        with:
+          name: RPCS3-MemoryBreakpoints-79822e1a
+          path: rpcs3/build-msvc/bin/**
+          if-no-files-found: error
+          retention-days: 7

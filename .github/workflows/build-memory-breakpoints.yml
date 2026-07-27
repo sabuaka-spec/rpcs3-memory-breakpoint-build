@@ -46,6 +46,30 @@ jobs:
           sed -i '/LLVMLIBS_URL/d' .ci/setup-windows.sh
           .ci/setup-windows.sh
 
+      - name: Patch libpng to use the in-tree zlib target
+        shell: pwsh
+        working-directory: rpcs3
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $file = '.\3rdparty\libpng\libpng\CMakeLists.txt'
+          $text = Get-Content -Path $file -Raw
+
+          $pattern = 'find_package\(ZLIB REQUIRED\)\r?\nset\(PNG_LINK_LIBRARIES ZLIB::ZLIB\)'
+          $replacement = "if(TARGET zlibstatic)`n  set(PNG_LINK_LIBRARIES zlibstatic)`nelse()`n  find_package(ZLIB REQUIRED)`n  set(PNG_LINK_LIBRARIES ZLIB::ZLIB)`nendif()"
+
+          $updated = [regex]::Replace($text, $pattern, $replacement, 1)
+
+          if ($updated -eq $text) {
+            throw "The libpng zlib-link patch was not applied."
+          }
+
+          Set-Content -Path $file -Value $updated -NoNewline -Encoding utf8
+
+          if (-not (Select-String -Path $file -Pattern '^if\(TARGET zlibstatic\)$')) {
+            throw "The patched libpng zlib target was not found."
+          }
+
       - name: Configure RPCS3 with memory breakpoints
         shell: pwsh
         working-directory: rpcs3
@@ -138,6 +162,7 @@ jobs:
           USE_SYSTEM_SDL=OFF
           ALSOFT_ENABLE_MODULES=OFF
           PNG_LIBCONF_HEADER=prebuilt
+          libpng zlib target=zlibstatic
           Built target: rpcs3 only
           Purpose: Trusty Bell enemy-size investigation
           '@ | Set-Content `

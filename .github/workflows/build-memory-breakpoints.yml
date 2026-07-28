@@ -1,4 +1,4 @@
-name: Build RPCS3 Memory Breakpoints MSBuild
+name: Build RPCS3 Memory Breakpoints MSBuild V7
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ env:
 
 jobs:
   build:
-    name: RPCS3 79822e1a Memory Breakpoints MSBuild
+    name: RPCS3 79822e1a Memory Breakpoints MSBuild V7
     runs-on: windows-2022
     timeout-minutes: 360
 
@@ -50,7 +50,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
           nuget restore rpcs3.sln
+
           if ($LASTEXITCODE -ne 0) {
             throw "NuGet restore failed."
           }
@@ -70,34 +72,59 @@ jobs:
             echo "$key=$val" >> "$GITHUB_ENV"
           done < .ci/ci-vars.env
 
-      - name: Enable memory breakpoints in the MSBuild projects
+      - name: Enable memory breakpoints only in emucore
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $file = '.\buildfiles\msvc\common_default.props'
-          $text = Get-Content -Path $file -Raw
+          $emucore = '.\rpcs3\emucore.vcxproj'
+          $common = '.\buildfiles\msvc\common_default.props'
+          $frontend = '.\rpcs3\rpcs3.vcxproj'
 
-          $needle = '_HAS_EXCEPTIONS=0;%(PreprocessorDefinitions)'
-          $replacement = '_HAS_EXCEPTIONS=0;RPCS3_HAS_MEMORY_BREAKPOINTS;%(PreprocessorDefinitions)'
+          $text = Get-Content -Path $emucore -Raw
 
-          if (-not $text.Contains($needle)) {
-            throw "Could not find the common MSBuild preprocessor-definition line."
+          $needle = 'CURL_STATICLIB;%(PreprocessorDefinitions)'
+          $replacement = 'CURL_STATICLIB;RPCS3_HAS_MEMORY_BREAKPOINTS;%(PreprocessorDefinitions)'
+
+          $beforeCount = ([regex]::Matches(
+            $text,
+            [regex]::Escape($needle)
+          )).Count
+
+          if ($beforeCount -ne 2) {
+            throw "Expected exactly two Debug/Release emucore definition lines, found $beforeCount."
           }
 
           $updated = $text.Replace($needle, $replacement)
-          Set-Content -Path $file -Value $updated -NoNewline -Encoding utf8
 
-          $found = Select-String `
-            -Path $file `
-            -Pattern 'RPCS3_HAS_MEMORY_BREAKPOINTS'
+          Set-Content `
+            -Path $emucore `
+            -Value $updated `
+            -NoNewline `
+            -Encoding utf8
 
-          if (-not $found) {
-            throw "RPCS3_HAS_MEMORY_BREAKPOINTS was not inserted."
+          $afterText = Get-Content -Path $emucore -Raw
+          $macroCount = ([regex]::Matches(
+            $afterText,
+            'RPCS3_HAS_MEMORY_BREAKPOINTS'
+          )).Count
+
+          if ($macroCount -ne 2) {
+            throw "Expected the macro exactly twice in emucore.vcxproj, found $macroCount."
           }
 
-          Write-Host "Memory-breakpoint macro inserted into:"
-          Write-Host $file
+          if (Select-String -Path $common -Pattern 'RPCS3_HAS_MEMORY_BREAKPOINTS' -Quiet) {
+            throw "The macro leaked into common_default.props."
+          }
+
+          if (Select-String -Path $frontend -Pattern 'RPCS3_HAS_MEMORY_BREAKPOINTS' -Quiet) {
+            throw "The macro leaked into rpcs3.vcxproj."
+          }
+
+          Write-Host "Macro scope verified:"
+          Write-Host "  emucore.vcxproj: exactly 2 definitions"
+          Write-Host "  common_default.props: unchanged"
+          Write-Host "  rpcs3.vcxproj: unchanged"
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -135,7 +162,9 @@ jobs:
           @'
           RPCS3 commit: 79822e1ac5ece67ffc6b68ea8aa3f4ae6ad2d948
           Windows build route: official rpcs3.sln + MSBuild
-          RPCS3_HAS_MEMORY_BREAKPOINTS=enabled globally
+          RPCS3_HAS_MEMORY_BREAKPOINTS scope: rpcs3/emucore.vcxproj only
+          common_default.props: unchanged
+          rpcs3/rpcs3.vcxproj: unchanged
           Purpose: Trusty Bell enemy-size investigation
           '@ | Set-Content `
             -Path '.\bin\MEMORY_BREAKPOINT_BUILD.txt' `
@@ -153,7 +182,7 @@ jobs:
       - name: Upload finished RPCS3
         uses: actions/upload-artifact@v4
         with:
-          name: RPCS3-MemoryBreakpoints-79822e1a-MSBuild
+          name: RPCS3-MemoryBreakpoints-79822e1a-MSBuild-V7
           path: artifacts/**
           if-no-files-found: error
           retention-days: 7
